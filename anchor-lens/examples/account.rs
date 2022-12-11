@@ -2,6 +2,7 @@ use anchor_lang::solana_program::pubkey;
 use anyhow::Result;
 use solana_anchor_lens::AnchorLens;
 use solana_client::rpc_client::RpcClient;
+use solana_anchor_lens::deserialize::IdlDeserializedAccount;
 
 fn main() -> Result<()> {
     let client = RpcClient::new("https://api.mainnet-beta.solana.com");
@@ -10,10 +11,10 @@ fn main() -> Result<()> {
     let key = pubkey!("8szGkuLTAux9XMgZ2vtY39jVSowEcpBfFfD8hXSEqdGC");
     println!("Attempting to parse account {}", key.to_string());
 
-    let (program_name, act_type, value) = deser
-        .fetch_and_deserialize_account_without_idl(&key)?;
+    let IdlDeserializedAccount { program_name, type_name, data } = deser
+        .fetch_and_deserialize_account(&key, None)?;
     println!("Found program: {}", program_name);
-    println!("Found account type: {}", act_type);
-    println!("{}", serde_json::to_string_pretty(&value)?);
+    println!("Found account type: {}", type_name);
+    println!("{}", serde_json::to_string_pretty(&data)?);
     Ok(())
 }

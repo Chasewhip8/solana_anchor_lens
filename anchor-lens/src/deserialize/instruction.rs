@@ -153,46 +153,52 @@ pub enum AccountMetaStatus {
     UnnecessaryPrivilegeEscalation,
 }
 
-/// Attempts deserialization of a given transaction instruction.
-/// The [VersionedMessage] passed in must be from the same transaction.
-/// If the attempt fails, we return a JSON object indicating the
-/// reason for failure, and any other information.
-pub fn deserialize_instruction(
-    idl: &IdlWithDiscriminators,
-    instruction_num: usize,
-    ix: &CompiledInstruction,
-    message: &VersionedMessage,
-) -> Value {
-    let idx = ix.program_id_index;
-    let program_id = message.static_account_keys()[idx as usize];
-    let maybe_deserialized = deser_ix_data_from_idl(&idl, ix.data.clone());
-    if let Ok((idl_ix, ix_data)) = maybe_deserialized {
-        let account_metas = {
-            let mut metas: Vec<Value> = vec![];
-            let mut increment: usize = 0;
-            let account_meta_groups =
-                AccountMetaGroups::new_from_message(message.clone(), ix.accounts.clone());
-            account_meta_groups.idl_accounts_to_json(
-                &mut increment,
-                idl_ix.accounts.clone(),
-                &mut metas,
-            );
-            metas
-        };
-        json!({
-           "program_id": program_id.to_string(),
-           "program_name": idl.name,
-           "instruction": {
-               "name": idl_ix.name,
-               "data": ix_data,
-               "accounts": account_metas
-            }
-        })
-    } else {
-        // TODO Maybe add account metas and raw ix data?
-        json!({
-           "program_id": program_id.to_string(),
-           "unknown_discriminator": format!("instruction {}", instruction_num)
-        })
-    }
-}
+// /// Attempts deserialization of a given transaction instruction.
+// /// The [VersionedMessage] passed in must be from the same transaction.
+// /// If the attempt fails, we return a JSON object indicating the
+// /// reason for failure, and any other information.
+// pub fn deserialize_instruction(
+//     idl: &IdlWithDiscriminators,
+//     instruction_num: usize,
+//     ix: &CompiledInstruction,
+//     message: &VersionedMessage,
+//     inner_instructions: Option<&Vec<CompiledInstruction>>,
+// ) -> Value {
+//     let idx = ix.program_id_index;
+//     let program_id = message.static_account_keys()[idx as usize];
+//     let maybe_deserialized = deser_ix_data_from_idl(&idl, ix.data.clone());
+//     if let Ok((idl_ix, ix_data)) = maybe_deserialized {
+//         let account_metas = {
+//             let mut metas: Vec<Value> = vec![];
+//             let mut increment: usize = 0;
+//             let account_meta_groups =
+//                 AccountMetaGroups::new_from_message(message.clone(), ix.accounts.clone());
+//             account_meta_groups.idl_accounts_to_json(
+//                 &mut increment,
+//                 idl_ix.accounts.clone(),
+//                 &mut metas,
+//             );
+//             metas
+//         };
+//         if let Some(instructions) = inner_instructions {
+//             for (i, ix) in instructions.iter().enumerate() {
+//
+//             }
+//         }
+//         json!({
+//            "program_id": program_id.to_string(),
+//            "program_name": idl.name,
+//            "instruction": {
+//                "name": idl_ix.name,
+//                "data": ix_data,
+//                "accounts": account_metas
+//             }
+//         })
+//     } else {
+//         // TODO Maybe add account metas and raw ix data?
+//         json!({
+//            "program_id": program_id.to_string(),
+//            "unknown_discriminator": format!("instruction {}", instruction_num)
+//         })
+//     }
+// }

@@ -27,6 +27,9 @@ pub fn fetch_idl(client: &RpcClient, idl_addr: &Pubkey) -> anyhow::Result<IdlWit
             .map_or(Err(anyhow!("IDL account not found")), Ok)?;
     }
 
+    if account.data.len() < 8 {
+        return Err(anyhow!("IDL account is the wrong size"));
+    }
     // Cut off account discriminator.
     let mut d: &[u8] = &account.data[8..];
     let idl_account: IdlAccount = AnchorDeserialize::deserialize(&mut d)?;
