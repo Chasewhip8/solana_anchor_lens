@@ -6,11 +6,10 @@ use serde_json::{json, Value};
 use solana_account_decoder::{UiAccountData, UiAccountEncoding};
 use solana_client::rpc_client::RpcClient;
 use solana_program::pubkey::Pubkey;
-use solana_sdk::account::{Account, ReadableAccount};
+use solana_sdk::account::Account;
 use solana_sdk::bs58;
 use solana_sdk::signature::Signature;
-use solana_sdk::transaction::VersionedTransaction;
-use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, EncodedTransaction, EncodedTransactionWithStatusMeta, UiCompiledInstruction, UiInstruction, UiTransactionEncoding, UiTransactionStatusMeta};
+use solana_transaction_status::{EncodedConfirmedTransactionWithStatusMeta, EncodedTransactionWithStatusMeta, UiInstruction, UiTransactionEncoding, UiTransactionStatusMeta};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use solana_program::instruction::CompiledInstruction;
@@ -22,14 +21,28 @@ pub mod field;
 pub mod idl_type_deserializer;
 pub mod instruction;
 
+/// The output of a successful account deserialization
+/// aided by its owning program's on-chain IDL.
 pub struct IdlDeserializedAccount {
+    /// The program name listed in the IDL.
     pub program_name: String,
+    /// The name of the deserialized type, listed in the IDL's `types` JSON block.
+    /// We compare discriminants based on the names of the `types`, and the first
+    /// matching one is targeted for deserialization.
     pub type_name: String,
+    /// The deserialized data. See [idl_type_deserializer::TypeDefinitionDeserializer] for details.
     pub data: Value,
 }
 
+/// Since inner instructions are not encoded in a transaction message,
+/// we need to pull it from the metadata sent when querying for historical
+/// transaction data.
 pub struct TransactionAndInnerIx {
+    /// A message is transaction data ready to be packed and signed.
+    /// Since a 2022 update to transaction schemas, there is now the `VersionedMessage`.
     pub message: VersionedMessage,
+    /// Indexed by instruction number. We do not record nested inner instructions,
+    /// as those are not returned from the Solana RPC `get_transaction` endpoint.
     pub inner_instructions: HashMap<u8, Vec<CompiledInstruction>>,
 }
 
@@ -43,8 +56,15 @@ pub struct TransactionAndInnerIx {
 /// of program IDL accounts. These are found on chain, and they store
 /// an Anchor IDL JSON file in compressed form.
 pub struct AnchorLens {
+    /// This client is used to make RPC calls to get IDLs, account data,
+    /// and historical transaction data.
     pub client: RpcClient,
+    /// This struct will optionally cache IDLs to reduce unnecessary RPC calls.
+    /// [crate::fetch_idl::discriminators::IdlWithDiscriminators]
+    /// are stored keyed by the 32-byte array form of the Solana SDK `Pubkey`,
+    /// which is easily accessible through dereferencing.
     pub idl_cache: RefCell<HashMap<[u8; 32], IdlWithDiscriminators>>,
+    /// Boolean flag that controls caching of IDLs.
     pub cache_idls: bool,
 }
 
@@ -163,6 +183,90 @@ impl AnchorLens {
         })
     }
 
+    /// Attempts deserialization of a given transaction instruction.
+    /// The [VersionedMessage] passed in is from the same transaction.
+    /// If the attempt fails, we return a JSON object indicating the
+    /// reason for failure, and any other information.
+    fn deserialize_ix(&self,
+                      i: usize,
+                      ix: &CompiledInstruction,
+                      message: &VersionedMessage,
+                      inner_instructions: Option<&Vec<CompiledInstruction>>,
+    ) -> Result<Value> {
+        // Calculate the inner instructions up front.
+        let inner_ix = {
+            let mut inner_ix = vec![];
+            if let Some(instructions) = inner_instructions {
+                for (i, ix) in instructions.iter().enumerate() {
+                    inner_ix.push(self.deserialize_ix(
+                        i,
+                        ix,
+                        message,
+                        None,
+                    )?);
+                }
+            }
+            inner_ix
+        };
+        // Get program ID, find IDL
+        let idx = ix.program_id_index;
+        let program_id = message.static_account_keys()[idx as usize];
+        let idl = self.fetch_idl(&program_id);
+        // Try fetching the IDL and deserializing.
+        let mut json = if let Ok(idl) = idl {
+            // If there's an IDL, we can try deserializing
+            let maybe_deserialized = deser_ix_data_from_idl(&idl, ix.data.clone());
+            if let Ok((idl_ix, ix_data)) = maybe_deserialized {
+                // If we succeeded in deserializing the instruction data,
+                // then we can also name each account passed in to the instruction.
+                let accounts = {
+                    let mut metas: Vec<Value> = vec![];
+                    let mut increment: usize = 0;
+                    let account_meta_groups =
+                        AccountMetaGroups::new_from_message(message.clone(), ix.accounts.clone());
+                    account_meta_groups.idl_accounts_to_json(
+                        &mut increment,
+                        idl_ix.accounts.clone(),
+                        &mut metas,
+                    );
+                    metas
+                };
+                let json = json!({
+                   "program_id": program_id.to_string(),
+                   "program_name": idl.name,
+                   "instruction": {
+                       "name": idl_ix.name,
+                       "data": ix_data,
+                       "accounts": accounts
+                    }
+                });
+                json
+            } else {
+                // If the IDL contains no matching discriminator,
+                // then it's not up to date or invalid.
+                let json = json!({
+                   "program_id": program_id.to_string(),
+                   "unknown_discriminator": format!("instruction {}", i)
+                });
+                json
+            }
+        } else {
+            // If there's no IDL, we cannot deserialize
+            let json = json!({
+                   "program_id": program_id.to_string(),
+                   "unknown_ix": format!("instruction {}", i)
+                });
+            json
+        };
+        // Optionally append any inner instructions
+        if !inner_ix.is_empty() {
+            json.as_object_mut().unwrap().insert(
+                "inner_instructions".to_string(), Value::Array(inner_ix)
+            );
+        }
+        Ok(json)
+    }
+
     /// Deserializes a transaction's instructions.
     ///
     /// Provides instruction names, deserialized args, and decoded / validated
@@ -179,132 +283,13 @@ impl AnchorLens {
         for (i, ix) in tx.message.instructions()
             .iter()
             .enumerate() {
-            // TODO Cut this block out into its own method
-            let idx = ix.program_id_index;
-            let program_id = tx.message.static_account_keys()[idx as usize];
-            let idl = self.fetch_idl(&program_id);
-            if let Ok(idl) = idl {
-                let json = self.deserialize_instruction(
-                    &idl,
-                    i,
-                    ix,
-                    &tx.message,
-                    tx.inner_instructions.get(&u8::try_from(i).unwrap())
-                );
-                instructions_deserialized.push(json);
-            } else {
-                let mut inner_ix = vec![];
-                if let Some(instructions) = tx.inner_instructions.get(&u8::try_from(i).unwrap()) {
-                    for (i, ix) in instructions.iter().enumerate() {
-                        let idx = ix.program_id_index;
-                        let program_id = tx.message.static_account_keys()[idx as usize];
-                        let idl = self.fetch_idl(&program_id);
-                        if let Ok(idl) = idl {
-                            let json = self.deserialize_instruction(
-                                &idl,
-                                i,
-                                ix,
-                                &tx.message,
-                                None,
-                            );
-                            inner_ix.push(json);
-                        } else {
-                            let json = json!({
-                           "program_id": program_id.to_string(),
-                           "unknown_ix": format!("instruction {}", i)
-                        });
-                            inner_ix.push(json);
-                        }
-                    }
-                }
-                let mut json = json!({
-                   "program_id": program_id.to_string(),
-                   "unknown_ix": format!("instruction {}", i)
-                });
-                if !inner_ix.is_empty() {
-                    json.as_object_mut().unwrap().insert(
-                        "inner_instructions".to_string(), Value::Array(inner_ix)
-                    );
-                }
-                instructions_deserialized.push(json);
-            }
+            instructions_deserialized.push(
+              self.deserialize_ix(i, ix, &tx.message,
+                                  tx.inner_instructions.get(&u8::try_from(i).unwrap())
+              )?
+            );
         }
         Ok(Value::Array(instructions_deserialized))
-    }
-
-    /// Attempts deserialization of a given transaction instruction.
-    /// The [VersionedMessage] passed in must be from the same transaction.
-    /// If the attempt fails, we return a JSON object indicating the
-    /// reason for failure, and any other information.
-    pub fn deserialize_instruction(&self,
-        idl: &IdlWithDiscriminators,
-        instruction_num: usize,
-        ix: &CompiledInstruction,
-        message: &VersionedMessage,
-        inner_instructions: Option<&Vec<CompiledInstruction>>,
-    ) -> Value {
-        let idx = ix.program_id_index;
-        let program_id = message.static_account_keys()[idx as usize];
-        let maybe_deserialized = deser_ix_data_from_idl(&idl, ix.data.clone());
-        if let Ok((idl_ix, ix_data)) = maybe_deserialized {
-            let account_metas = {
-                let mut metas: Vec<Value> = vec![];
-                let mut increment: usize = 0;
-                let account_meta_groups =
-                    AccountMetaGroups::new_from_message(message.clone(), ix.accounts.clone());
-                account_meta_groups.idl_accounts_to_json(
-                    &mut increment,
-                    idl_ix.accounts.clone(),
-                    &mut metas,
-                );
-                metas
-            };
-            let mut inner_ix = vec![];
-            if let Some(instructions) = inner_instructions {
-                for (i, ix) in instructions.iter().enumerate() {
-                    let idx = ix.program_id_index;
-                    let program_id = message.static_account_keys()[idx as usize];
-                    let idl = self.fetch_idl(&program_id);
-                    if let Ok(idl) = idl {
-                        let json = self.deserialize_instruction(
-                            &idl,
-                            i,
-                            ix,
-                            &message,
-                            None,
-                        );
-                        inner_ix.push(json);
-                    } else {
-                        let json = json!({
-                           "program_id": program_id.to_string(),
-                           "unknown_ix": format!("instruction {}", i)
-                        });
-                        inner_ix.push(json);
-                    }
-                }
-            }
-            let mut output = json!({
-               "program_id": program_id.to_string(),
-               "program_name": idl.name,
-               "instruction": {
-                   "name": idl_ix.name,
-                   "data": ix_data,
-                   "accounts": account_metas
-                }
-            });
-            if !inner_ix.is_empty() {
-                output.as_object_mut().unwrap().insert(
-                    "inner_instructions".to_string(), Value::Array(inner_ix)
-                );
-            }
-            output
-        } else {
-            // TODO Maybe add account metas and raw ix data?
-            json!({
-               "program_id": program_id.to_string(),
-               "unknown_discriminator": format!("instruction {}", instruction_num)
-            })
-        }
     }
 }
 

@@ -7,7 +7,6 @@ use anchor_syn::idl::{IdlAccountItem, IdlAccounts, IdlInstruction};
 use anyhow::anyhow;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use solana_program::instruction::CompiledInstruction;
 use solana_program::message::{MessageHeader, VersionedMessage};
 use solana_program::pubkey::Pubkey;
 
