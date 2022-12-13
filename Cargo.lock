@@ -1727,8 +1727,8 @@ dependencies = [
 
 [[package]]
 name = "jungle-fi-cli-utils"
-version = "0.1.0"
-source = "git+https://github.com/Jungle-Finance/jungle-fi-cli-utils.git#bf98c6ad1e31a95695d5d8f43530619167f3261d"
+version = "0.1.1"
+source = "git+https://github.com/Jungle-Finance/jungle-fi-cli-utils.git#9f4261b19922828aaec6600349845522d7c08dc3"
 dependencies = [
  "anchor-client",
  "anyhow",
@@ -2998,7 +2998,7 @@ dependencies = [
 [[package]]
 name = "solana-clap-v3-utils"
 version = "1.11.0"
-source = "git+https://github.com/Jungle-Finance/jungle-fi-cli-utils.git#bf98c6ad1e31a95695d5d8f43530619167f3261d"
+source = "git+https://github.com/Jungle-Finance/jungle-fi-cli-utils.git#9f4261b19922828aaec6600349845522d7c08dc3"
 dependencies = [
  "chrono",
  "clap 3.2.23",
