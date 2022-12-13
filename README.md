@@ -30,8 +30,5 @@ $ cargo run --example transaction
 ```
 
 # TODO
-- CLI crate
-- Parse inner instructions
+- Deserialize SPL token and system instructions. Cannot simply make an IDL and reuse that approach, because they do not serialize the same.
 - CLI instruction -- Account Dump to JSON file from Deserialized.
-- CLI instruction -- Accound Dump mint, modified
-- CLI instruction -- Accound Dump token, modified

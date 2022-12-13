@@ -34,10 +34,13 @@ pub struct IdlDeserializedAccount {
     pub data: Value,
 }
 
+/// The transaction message itself, and any inner instructions extracted from it
+/// by the runtime.
+///
 /// Since inner instructions are not encoded in a transaction message,
 /// we need to pull it from the metadata sent when querying for historical
 /// transaction data.
-pub struct TransactionAndInnerIx {
+pub struct HistoricalTransaction {
     /// A message is transaction data ready to be packed and signed.
     /// Since a 2022 update to transaction schemas, there is now the `VersionedMessage`.
     pub message: VersionedMessage,
@@ -118,7 +121,7 @@ impl AnchorLens {
 
     /// Fetches a historical transaction (the message and its signatures), filtering out
     /// the rest of the usual `get_transaction` RPC response.
-    pub fn get_versioned_transaction(&self, txid: &Signature) -> Result<TransactionAndInnerIx> {
+    pub fn get_versioned_transaction(&self, txid: &Signature) -> Result<HistoricalTransaction> {
         let tx = self
             .client
             .get_transaction(txid, UiTransactionEncoding::Base64)?;
@@ -157,7 +160,7 @@ impl AnchorLens {
         let transaction = transaction
             .decode()
             .ok_or(anyhow!("Failed to decode transaction"))?;
-        Ok(TransactionAndInnerIx { message: transaction.message, inner_instructions })
+        Ok(HistoricalTransaction { message: transaction.message, inner_instructions })
     }
 
     /// Useful for repeated lookups. You can reduce RPC calls by calling
@@ -188,10 +191,10 @@ impl AnchorLens {
     /// If the attempt fails, we return a JSON object indicating the
     /// reason for failure, and any other information.
     fn deserialize_ix(&self,
-                      i: usize,
-                      ix: &CompiledInstruction,
-                      message: &VersionedMessage,
-                      inner_instructions: Option<&Vec<CompiledInstruction>>,
+        i: usize,
+        ix: &CompiledInstruction,
+        message: &VersionedMessage,
+        inner_instructions: Option<&Vec<CompiledInstruction>>,
     ) -> Result<Value> {
         // Calculate the inner instructions up front.
         let inner_ix = {
@@ -278,7 +281,7 @@ impl AnchorLens {
     /// [crate::deserialize::instruction::AccountMetaStatus] variant.
     ///
     /// Caution: This calls the `fetch_idl` method on every instruction. Caching is advised!
-    pub fn deserialize_transaction(&self, tx: TransactionAndInnerIx) -> Result<Value> {
+    pub fn deserialize_transaction(&self, tx: HistoricalTransaction) -> Result<Value> {
         let mut instructions_deserialized = vec![];
         for (i, ix) in tx.message.instructions()
             .iter()
@@ -287,6 +290,22 @@ impl AnchorLens {
               self.deserialize_ix(i, ix, &tx.message,
                                   tx.inner_instructions.get(&u8::try_from(i).unwrap())
               )?
+            );
+        }
+        Ok(Value::Array(instructions_deserialized))
+    }
+
+    /// Deserialize just a transaction message, no inner instructions.
+    ///
+    /// This is useful for deserializing transaction messages that have no yet been published
+    /// to the blockchain, since in that case all you have is the [VersionedMessage].
+    pub fn deserialize_message(&self, message: &VersionedMessage) -> Result<Value> {
+        let mut instructions_deserialized = vec![];
+        for (i, ix) in message.instructions()
+            .iter()
+            .enumerate() {
+            instructions_deserialized.push(
+                self.deserialize_ix(i, ix, message, None)?
             );
         }
         Ok(Value::Array(instructions_deserialized))
